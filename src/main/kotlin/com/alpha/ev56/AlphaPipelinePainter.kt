@@ -100,8 +100,6 @@ class AlphaGutterVisualizer(
 
     override fun getLineText(line: Int, editor: Editor): String = "\u2007".repeat(15)
 
-    override fun useMaxWidth(): Boolean = true
-
     override fun getToolTip(line: Int, editor: Editor): String? {
         val info = scheduleProvider()[line] ?: return null
         if (!info.isInstruction) return null
