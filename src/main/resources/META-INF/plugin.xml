@@ -1,0 +1,12 @@
+<idea-plugin>
+    <id>dec.alpha.ev56.visualizer</id>
+    <name>Alpha 21164A Pipeline Visualizer</name>
+    <vendor>Janne Ramstedt</vendor>
+    <description>Visualizes DEC Alpha 21164A (EV56) quad-issue pipeline slot usage, MAF/WBUF stalls, and I-Cache fetches for GNU GAS assembly.</description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <editorFactoryListener implementation="dec.alpha.ev56.AlphaEditorListener"/>
+    </extensions>
+</idea-plugin>
