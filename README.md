@@ -7,6 +7,7 @@ An IntelliJ Platform plugin (designed for **CLion** and **IntelliJ IDEA**) that 
 ## Disclaimer
 
 > **Might not work at all:** AI generated for personal educational purposes
+
 > **Accuracy & Simulation Notice:** This plugin uses a static, heuristic microarchitectural model of the DEC Alpha 21164A (EV56) processor. While it models EV56 execution slotting rules, instruction latencies, Miss Address Files (MAF), Write Buffers (WBUF), and I-Cache fetch boundaries, **the cycle counts, stall predictions, and cache behaviors are approximations and may not be accurate or cycle-exact** compared to real EV56 silicon or full hardware RTL simulators. Dynamic runtime conditions—such as actual L1/L2/B-cache hit rates, TLB misses, DRAM page conflicts, replay traps, and dynamic branch predictor history—cannot be fully determined from static source files. Do not rely on these estimates as a substitute for hardware performance counters or cycle-accurate architectural simulation.
 
 ---

@@ -44,9 +44,9 @@ class AlphaEditorListener : EditorFactoryListener {
                 val g2 = g as Graphics2D
 
                 val annotationX = gutterEx.annotationsAreaOffset
-                if (annotationX < 0) return
-
                 val annotationWidth = gutterEx.annotationsAreaWidth
+                if (annotationX < 0 || annotationWidth <= 0) return
+
                 val oldClip = g2.clip
                 g2.clipRect(annotationX, 0, annotationWidth, height)
 
@@ -55,9 +55,11 @@ class AlphaEditorListener : EditorFactoryListener {
                 val startLine = editor.xyToLogicalPosition(Point(0, visibleArea.y)).line
                 val endLine = editor.xyToLogicalPosition(Point(0, visibleArea.y + visibleArea.height)).line
 
+                val tracksOriginX = annotationX + 22
+
                 for (line in startLine..endLine) {
                     val yTop = editor.logicalPositionToXY(LogicalPosition(line, 0)).y
-                    visualizer.paintTracks(g2, line, xStart = annotationX + 4, yTop = yTop, lineHeight = lineHeight)
+                    visualizer.paintTracks(g2, line, xStart = tracksOriginX, yTop = yTop, lineHeight = lineHeight)
                 }
 
                 g2.clip = oldClip
@@ -96,7 +98,9 @@ class AlphaGutterVisualizer(
     private val slots = listOf(PipeSlot.E0, PipeSlot.E1, PipeSlot.FA, PipeSlot.FM)
     private val trackWidth = 14
 
-    override fun getLineText(line: Int, editor: Editor): String = " ".repeat(14)
+    override fun getLineText(line: Int, editor: Editor): String = "\u2007".repeat(15)
+
+    override fun useMaxWidth(): Boolean = true
 
     override fun getToolTip(line: Int, editor: Editor): String? {
         val info = scheduleProvider()[line] ?: return null
@@ -131,10 +135,9 @@ class AlphaGutterVisualizer(
 
         paintIFetchTrack(g, schedule.fetchEvent, xStart, yTop, lineHeight)
 
-        val slotsStartX = xStart + 14
+        val slotsStartX = xStart + trackWidth
         slots.forEachIndexed { idx, slot ->
             val trackX = slotsStartX + (idx * trackWidth)
-            val centerX = trackX + (trackWidth / 2)
 
             val color = when {
                 schedule.assignedSlot == slot && schedule.stallCyclesBefore > 0 -> JBColor.RED
@@ -144,15 +147,15 @@ class AlphaGutterVisualizer(
 
             g.color = color
             g.stroke = BasicStroke(3.0f)
-            g.drawLine(centerX, yTop, centerX, yTop + lineHeight)
+            g.drawLine(trackX, yTop, trackX, yTop + lineHeight)
 
             if (schedule.assignedSlot == slot && schedule.stallCyclesBefore > 0) {
                 g.color = JBColor.RED
                 g.stroke = BasicStroke(2.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 0f, floatArrayOf(3f), 0f)
-                g.drawLine(centerX - 4, yTop - 4, centerX - 4, yTop + (lineHeight / 2))
+                g.drawLine(trackX - 4, yTop - 4, trackX - 4, yTop + (lineHeight / 2))
 
                 g.font = Font("Monospaced", Font.BOLD, 9)
-                g.drawString("-${schedule.stallCyclesBefore}c", trackX - 2, yTop + 10)
+                g.drawString("-${schedule.stallCyclesBefore}c", trackX, yTop + 10)
             }
         }
 
