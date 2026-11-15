@@ -106,9 +106,28 @@ class AlphaGutterVisualizer(
         val info = scheduleProvider()[line] ?: return null
         if (!info.isInstruction) return null
         return buildString {
-            append("Cycle: ${info.cycle} | PC: 0x${info.fetchEvent?.pc?.toString(16) ?: "?"} | Slot: ${info.assignedSlot}")
-            if (info.stallCyclesBefore > 0) append(" | Stalled: ${info.stallCyclesBefore}c")
-            if (info.branchPenalty != null) append(" | Branch Mispredict: ${info.branchPenalty}c")
+            append("<html>")
+            append("<b>Cycle:</b> ${info.cycle} &nbsp;|&nbsp; ")
+            append("<b>PC:</b> 0x${info.fetchEvent?.pc?.toString(16) ?: "?"} &nbsp;|&nbsp; ")
+            append("<b>Slot:</b> ${info.assignedSlot}")
+
+            if (info.stallCyclesBefore > 0) {
+                val reasonText = if (info.stallReasons.isNotEmpty()) {
+                    info.stallReasons.joinToString(", ")
+                } else {
+                    "Pipeline stall"
+                }
+                append("<br><font color='#ff6b6b'><b>Stalled:</b> ${info.stallCyclesBefore}c — $reasonText</font>")
+            }
+
+            if (info.fetchEvent?.isUnalignedTarget == true) {
+                append("<br><font color='#ffa94d'><b>I-Fetch:</b> Unaligned branch target (not 16B aligned)</font>")
+            }
+
+            if (info.branchPenalty != null) {
+                append("<br><font color='#ffa94d'><b>Branch Mispredict Penalty:</b> ${info.branchPenalty}c</font>")
+            }
+            append("</html>")
         }
     }
 

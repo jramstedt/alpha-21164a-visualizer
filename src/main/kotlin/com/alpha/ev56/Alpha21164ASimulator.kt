@@ -6,6 +6,7 @@ data class LineSchedule(
     val cycle: Int = 0,
     val assignedSlot: PipeSlot? = null,
     val stallCyclesBefore: Int = 0,
+    val stallReasons: List<String> = emptyList(),
     val branchPenalty: Int? = null,
     val fetchEvent: IFetchEvent? = null,
     val activeSlotsThisCycle: Set<PipeSlot> = emptySet()
@@ -102,21 +103,28 @@ class Alpha21164ASimulator {
                 isMarkedICacheMiss = item.isICacheMiss
             )
 
+            val reasons = mutableListOf<String>()
             var stallCycles = 0
+
             if (fetchEvent.icacheMissStall > 0) {
                 stallCycles += fetchEvent.icacheMissStall
+                reasons.add("I-Cache miss / IDU MAF (${fetchEvent.icacheMissStall}c)")
                 currentCycle += fetchEvent.icacheMissStall
                 usedSlotsInCurrentCycle.clear()
             }
 
             // 2. Check RAW register dependencies
-            val earliestDataCycle = inst.srcRegs.maxOfOrNull { regReadyCycle[it] ?: 0 } ?: 0
+            val blockingRegs = inst.srcRegs.filter { (regReadyCycle[it] ?: 0) > currentCycle }
+            val earliestDataCycle = blockingRegs.maxOfOrNull { regReadyCycle[it] ?: 0 } ?: 0
             if (earliestDataCycle > currentCycle) {
                 // Advancing from currentCycle -> currentCycle + 1 when slots were already used
                 // is normal pipeline progression (0 stall cycles), NOT a red stall.
                 val naturalNextCycle = if (usedSlotsInCurrentCycle.isNotEmpty()) currentCycle + 1 else currentCycle
                 if (earliestDataCycle > naturalNextCycle) {
-                    stallCycles += (earliestDataCycle - naturalNextCycle)
+                    val rawStall = earliestDataCycle - naturalNextCycle
+                    stallCycles += rawStall
+                    val regList = blockingRegs.distinct().joinToString(", ")
+                    reasons.add("RAW hazard on $regList (${rawStall}c)")
                 }
                 currentCycle = earliestDataCycle
                 usedSlotsInCurrentCycle.clear()
@@ -127,7 +135,9 @@ class Alpha21164ASimulator {
                 if (fmUnitFreeCycle > currentCycle) {
                     val naturalNext = if (usedSlotsInCurrentCycle.isNotEmpty()) currentCycle + 1 else currentCycle
                     if (fmUnitFreeCycle > naturalNext) {
-                        stallCycles += (fmUnitFreeCycle - naturalNext)
+                        val unitStall = fmUnitFreeCycle - naturalNext
+                        stallCycles += unitStall
+                        reasons.add("FM divider busy (${unitStall}c)")
                     }
                     currentCycle = fmUnitFreeCycle
                     usedSlotsInCurrentCycle.clear()
@@ -137,7 +147,9 @@ class Alpha21164ASimulator {
                 if (e0MulUnitFreeCycle > currentCycle) {
                     val naturalNext = if (usedSlotsInCurrentCycle.isNotEmpty()) currentCycle + 1 else currentCycle
                     if (e0MulUnitFreeCycle > naturalNext) {
-                        stallCycles += (e0MulUnitFreeCycle - naturalNext)
+                        val unitStall = e0MulUnitFreeCycle - naturalNext
+                        stallCycles += unitStall
+                        reasons.add("E0 multiplier busy (${unitStall}c)")
                     }
                     currentCycle = e0MulUnitFreeCycle
                     usedSlotsInCurrentCycle.clear()
@@ -156,6 +168,7 @@ class Alpha21164ASimulator {
                     )
                     if (wbufStall > 0) {
                         stallCycles += wbufStall
+                        reasons.add("Write Buffer full / MTU contention (${wbufStall}c)")
                         currentCycle += wbufStall
                         usedSlotsInCurrentCycle.clear()
                     }
@@ -164,6 +177,7 @@ class Alpha21164ASimulator {
                     val barrierStall = wbufTracker.flushBarrier(currentCycle)
                     if (barrierStall > 0) {
                         stallCycles += barrierStall
+                        reasons.add("Write Buffer barrier flush (${barrierStall}c)")
                         currentCycle += barrierStall
                         usedSlotsInCurrentCycle.clear()
                     }
@@ -176,6 +190,7 @@ class Alpha21164ASimulator {
                     )
                     if (storeConflictStall > 0) {
                         stallCycles += storeConflictStall
+                        reasons.add("Store-to-load WBUF conflict (${storeConflictStall}c)")
                         currentCycle += storeConflictStall
                         usedSlotsInCurrentCycle.clear()
                     }
@@ -190,6 +205,7 @@ class Alpha21164ASimulator {
                     )
                     if (mafStall > 0) {
                         stallCycles += mafStall
+                        reasons.add("Load MAF full 6/6 (${mafStall}c)")
                         currentCycle += mafStall
                         usedSlotsInCurrentCycle.clear()
                     }
@@ -251,6 +267,7 @@ class Alpha21164ASimulator {
                 cycle = currentCycle,
                 assignedSlot = chosenSlot,
                 stallCyclesBefore = stallCycles,
+                stallReasons = reasons,
                 branchPenalty = inst.branchPenalty,
                 fetchEvent = fetchEvent,
                 activeSlotsThisCycle = usedSlotsInCurrentCycle.toSet()
