@@ -58,8 +58,8 @@ object AlphaRegisterMap {
         "ft15" to "\$f31", "fzero" to "\$f31"
     )
 
-    private val rawIntRegex = Regex("""^\$([0-9]|[12][0-9]|3[01])$""")
-    private val rawFpRegex = Regex("""^\$f([0-9]|[12][0-9]|3[01])$""")
+    private val rawIntRegex = Regex("^\\$([0-9]|[12][0-9]|3[01])$")
+    private val rawFpRegex = Regex("^\\$f([0-9]|[12][0-9]|3[01])$")
 
     /**
      * Converts any raw register ($0..$31, $f0..$f31) or regdef.h alias (v0, $v0, sp, zero, fa0, etc.)
