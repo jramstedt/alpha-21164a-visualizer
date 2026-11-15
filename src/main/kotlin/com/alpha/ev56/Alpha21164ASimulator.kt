@@ -180,7 +180,7 @@ class Alpha21164ASimulator {
                         usedSlotsInCurrentCycle.clear()
                     }
 
-                    val isPrefetch = inst.destReg in setOf("$31", "\$f31", "zero")
+                    val isPrefetch = AlphaRegisterMap.isZeroRegister(inst.destReg)
                     val (mafStall, memReadyCycle) = mafTracker.accessMemory(
                         currentCycle = currentCycle,
                         baseReg = inst.baseReg ?: "$31",
@@ -207,10 +207,10 @@ class Alpha21164ASimulator {
                 else -> {}
             }
 
-            // 5. General EV56 slot selection (no opcode-specific hardcoding):
+            // 5. General EV56 slot selection:
             // Yield E0 to E1 when the next independent instruction strictly requires E0.
             val nextHasRawOnCurrent = inst.destReg != null &&
-                inst.destReg !in setOf("$31", "\$f31", "zero") &&
+                !AlphaRegisterMap.isZeroRegister(inst.destReg) &&
                 inst.destReg in (nextInst?.srcRegs ?: emptyList())
 
             val nextCanPairOnE0 = nextInst != null &&
@@ -236,13 +236,12 @@ class Alpha21164ASimulator {
             if ((inst.type == InstType.FP_DIV || inst.type == InstType.FP_MUL) && inst.nonPipelinedBusyCycles > 0) {
                 fmUnitFreeCycle = currentCycle + inst.nonPipelinedBusyCycles
             }
-
             if (inst.type == InstType.IMUL && inst.nonPipelinedBusyCycles > 0) {
                 e0MulUnitFreeCycle = currentCycle + inst.nonPipelinedBusyCycles
             }
 
-            // 6. Update destination register readiness (ignore hardwired zero registers $31 and $f31)
-            if (inst.destReg != null && inst.destReg !in setOf("$31", "\$f31", "zero")) {
+            // 6. Update destination register readiness (ignoring hardwired zero registers $31 and $f31)
+            if (inst.destReg != null && !AlphaRegisterMap.isZeroRegister(inst.destReg)) {
                 regReadyCycle[inst.destReg] = currentCycle + effectiveLatency
             }
 
