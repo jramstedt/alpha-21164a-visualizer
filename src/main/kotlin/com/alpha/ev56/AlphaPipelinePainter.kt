@@ -27,16 +27,15 @@ class AlphaEditorListener : EditorFactoryListener {
         val ext = file.extension?.lowercase() ?: return
         if (ext !in setOf("s", "asm", "inc")) return
 
+        val gutterEx = editor.gutter as? EditorGutterComponentEx ?: return
         val simulator = Alpha21164ASimulator()
         var scheduleMap = simulator.analyze(editor.document.text)
 
-        val visualizer = AlphaGutterVisualizer(editor) { scheduleMap }
-        editor.gutter.registerTextAnnotation(visualizer)
-
-        val gutterEx = editor.gutter as? EditorGutterComponentEx ?: return
-
         val editorDisposable: Disposable = Disposer.newDisposable("AlphaPipelineVisualizer")
         EditorUtil.disposeWithEditor(editor, editorDisposable)
+
+        val visualizer = AlphaGutterVisualizer(editor) { scheduleMap }
+        editor.gutter.registerTextAnnotation(visualizer)
 
         val overlay = object : JComponent() {
             override fun paintComponent(g: Graphics) {
@@ -47,6 +46,7 @@ class AlphaEditorListener : EditorFactoryListener {
                 val annotationWidth = gutterEx.annotationsAreaWidth
                 if (annotationX < 0 || annotationWidth <= 0) return
 
+                // Strictly clip painting inside the reserved gutter annotation column
                 val oldClip = g2.clip
                 g2.clipRect(annotationX, 0, annotationWidth, height)
 
@@ -55,6 +55,7 @@ class AlphaEditorListener : EditorFactoryListener {
                 val startLine = editor.xyToLogicalPosition(Point(0, visibleArea.y)).line
                 val endLine = editor.xyToLogicalPosition(Point(0, visibleArea.y + visibleArea.height)).line
 
+                // Leave 22px on the left of annotationX for "IF-8c" labels
                 val tracksOriginX = annotationX + 22
 
                 for (line in startLine..endLine) {
@@ -98,24 +99,16 @@ class AlphaGutterVisualizer(
     private val slots = listOf(PipeSlot.E0, PipeSlot.E1, PipeSlot.FA, PipeSlot.FM)
     private val trackWidth = 14
 
+    // Reserve ~115px in the gutter annotation column using figure spaces
     override fun getLineText(line: Int, editor: Editor): String = "\u2007".repeat(15)
 
     override fun getToolTip(line: Int, editor: Editor): String? {
         val info = scheduleProvider()[line] ?: return null
         if (!info.isInstruction) return null
         return buildString {
-            append("Slot: ${info.assignedSlot}")
-            if (info.stallCyclesBefore > 0) {
-                append(" | Stalled: ${info.stallCyclesBefore}c")
-                if (info.stallReason != null) append(" (${info.stallReason})")
-            }
-            if (info.branchPenalty != null) {
-                append(" | Branch Mispredict: ${info.branchPenalty}c")
-            }
-            info.fetchEvent?.let {
-                append(" | PC: 0x${it.pc.toString(16)}")
-                if (it.isUnalignedTarget) append(" [Unaligned Target]")
-            }
+            append("Cycle: ${info.cycle} | PC: 0x${info.fetchEvent?.pc?.toString(16) ?: "?"} | Slot: ${info.assignedSlot}")
+            if (info.stallCyclesBefore > 0) append(" | Stalled: ${info.stallCyclesBefore}c")
+            if (info.branchPenalty != null) append(" | Branch Mispredict: ${info.branchPenalty}c")
         }
     }
 
@@ -126,16 +119,32 @@ class AlphaGutterVisualizer(
     override fun gutterClosed() {}
 
     fun paintTracks(g: Graphics2D, line: Int, xStart: Int, yTop: Int, lineHeight: Int) {
-        val schedule = scheduleProvider()[line]
+        val scheduleMap = scheduleProvider()
+        val schedule = scheduleMap[line]
+        // Draw tracks strictly on lines containing executable instructions
         if (schedule == null || !schedule.isInstruction) return
 
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
 
+        // 1. Draw IF (I-Cache Fetch) track
         paintIFetchTrack(g, schedule.fetchEvent, xStart, yTop, lineHeight)
 
-        val slotsStartX = xStart + trackWidth
+        val slotsStartX = xStart + 14
+
+        // 2. Draw a green grouping bracket when consecutive lines dual/quad-issue in the same cycle
+        val prevSchedule = (line - 1 downTo 0).firstNotNullOfOrNull { idx ->
+            scheduleMap[idx]?.takeIf { it.isInstruction }
+        }
+        if (prevSchedule != null && prevSchedule.cycle == schedule.cycle) {
+            g.color = JBColor(Color(46, 160, 67, 180), Color(63, 185, 80, 180))
+            g.stroke = BasicStroke(2.0f)
+            g.drawLine(slotsStartX - 3, yTop - (lineHeight / 2), slotsStartX - 3, yTop + (lineHeight / 2))
+        }
+
+        // 3. Draw E0, E1, FA, FM execution slot tracks
         slots.forEachIndexed { idx, slot ->
             val trackX = slotsStartX + (idx * trackWidth)
+            val centerX = trackX + (trackWidth / 2)
 
             val color = when {
                 schedule.assignedSlot == slot && schedule.stallCyclesBefore > 0 -> JBColor.RED
@@ -145,20 +154,22 @@ class AlphaGutterVisualizer(
 
             g.color = color
             g.stroke = BasicStroke(3.0f)
-            g.drawLine(trackX, yTop, trackX, yTop + lineHeight)
+            g.drawLine(centerX, yTop, centerX, yTop + lineHeight)
 
+            // Draw dashed red stall connector and cycle count
             if (schedule.assignedSlot == slot && schedule.stallCyclesBefore > 0) {
                 g.color = JBColor.RED
                 g.stroke = BasicStroke(2.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 0f, floatArrayOf(3f), 0f)
-                g.drawLine(trackX - 4, yTop - 4, trackX - 4, yTop + (lineHeight / 2))
+                g.drawLine(centerX - 4, yTop - 4, centerX - 4, yTop + (lineHeight / 2))
 
                 g.font = Font("Monospaced", Font.BOLD, 9)
-                g.drawString("-${schedule.stallCyclesBefore}c", trackX, yTop + 10)
+                g.drawString("-${schedule.stallCyclesBefore}c", trackX - 2, yTop + 10)
             }
         }
 
+        // 4. Draw branch misprediction penalty
         if (schedule.branchPenalty != null) {
-            val branchX = slotsStartX + (slots.size * trackWidth) + 6
+            val branchX = slotsStartX + (slots.size * trackWidth) + 2
             g.color = JBColor.ORANGE
             g.font = Font("Monospaced", Font.BOLD, 10)
             g.drawString("B:${schedule.branchPenalty}", branchX, yTop + lineHeight - 4)
@@ -168,14 +179,17 @@ class AlphaGutterVisualizer(
     private fun paintIFetchTrack(g: Graphics2D, fetch: IFetchEvent?, xLeft: Int, yTop: Int, lineHeight: Int) {
         if (fetch == null) return
 
+        // Solid blue divider for 32-byte (8-instruction) L1 I-cache line boundary
         if (fetch.is32ByteLineBoundary) {
             g.color = JBColor(Color(0, 120, 215), Color(75, 165, 255))
             g.stroke = BasicStroke(1.5f)
-            g.drawLine(xLeft, yTop, xLeft + 74, yTop)
-        } else if (fetch.is16ByteFetchBoundary) {
+            g.drawLine(xLeft, yTop, xLeft + 70, yTop)
+        }
+        // Dashed gray tick for 16-byte (4-instruction) IDU octaword fetch boundary
+        else if (fetch.is16ByteFetchBoundary) {
             g.color = JBColor(Color(150, 150, 150, 140), Color(110, 110, 110, 140))
             g.stroke = BasicStroke(1.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 0f, floatArrayOf(2f), 0f)
-            g.drawLine(xLeft, yTop, xLeft + 74, yTop)
+            g.drawLine(xLeft, yTop, xLeft + 70, yTop)
         }
 
         val barX = xLeft + 4
@@ -189,7 +203,7 @@ class AlphaGutterVisualizer(
 
         if (fetch.icacheMissStall > 0) {
             g.font = Font("Monospaced", Font.BOLD, 9)
-            g.drawString("IF-${fetch.icacheMissStall}c", xLeft - 24, yTop + 10)
+            g.drawString("IF-${fetch.icacheMissStall}c", xLeft - 22, yTop + 10)
         }
     }
 }

@@ -79,6 +79,10 @@ object AlphaInstructionTable {
     private val fpDivDoubleOps = setOf("divt", "divg")
     private val intFpXferOps = setOf("itofs", "itoff", "itoft", "ftois", "ftoit")
 
+    /**
+     * Strips C block comments, C++ line comments, and GNU GAS '#' comments
+     * while preserving line count and leading '#' C preprocessor directives.
+     */
     fun stripComments(documentText: String): List<String> {
         val withoutBlockComments = Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL)
             .replace(documentText) { match ->
@@ -98,9 +102,9 @@ object AlphaInstructionTable {
     }
 
     fun decodeClean(lineNum: Int, cleanCode: String, rawLine: String): DecodedInstruction? {
-        if (cleanCode.isEmpty() || cleanCode.startsWith(".") || cleanCode.startsWith("#")) return null
+        if (cleanCode.isEmpty() || cleanCode.startsWith(".")) return null
 
-        val isMissHint = rawLine.contains("# miss", ignoreCase = true) || rawLine.contains("// miss", ignoreCase = true)
+        val isMissHint = rawLine.contains("miss", ignoreCase = true) && !rawLine.contains("icache_miss", ignoreCase = true)
         val tokens = cleanCode.split(Regex("[\\s,()]+")).filter { it.isNotEmpty() }
         if (tokens.isEmpty()) return null
 
@@ -110,8 +114,9 @@ object AlphaInstructionTable {
         val memInfo = parseMemoryOperand(cleanCode)
 
         return when {
-            baseOp == "nop" -> DecodedInstruction(
-                lineNum, rawOp, "bis", InstType.NOP, null, emptyList(), setOf(PipeSlot.E0, PipeSlot.E1), 1
+            // --- Hardware NOPs (including EV56 fetch / fetch_m) & GAS Pseudo-Instructions ---
+            baseOp in setOf("nop", "fetch", "fetch_m") -> DecodedInstruction(
+                lineNum, rawOp, baseOp, InstType.NOP, null, emptyList(), setOf(PipeSlot.E0, PipeSlot.E1), 1
             )
             baseOp == "fnop" -> DecodedInstruction(
                 lineNum, rawOp, "cpys", InstType.NOP, null, emptyList(), setOf(PipeSlot.FA), 1
@@ -131,6 +136,8 @@ object AlphaInstructionTable {
             baseOp == "fclr" -> DecodedInstruction(
                 lineNum, rawOp, "cpys", InstType.FP_ADD, regs.lastOrNull(), emptyList(), setOf(PipeSlot.FA), 4
             )
+
+            // --- Integer ALU & CMOV ---
             baseOp in intAluOps -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.ALU, regs.lastOrNull(), regs.dropLast(1),
                 setOf(PipeSlot.E0, PipeSlot.E1), 1, memOffset = memInfo?.first ?: 0, baseReg = memInfo?.second
@@ -138,12 +145,16 @@ object AlphaInstructionTable {
             baseOp in intCmovOps -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.ALU, regs.lastOrNull(), regs, setOf(PipeSlot.E0, PipeSlot.E1), 1
             )
+
+            // --- Shifts, BWX, and MVI (E0 Only) ---
             baseOp in shiftAndBwxOps -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.SHIFT_BWX, regs.lastOrNull(), regs.dropLast(1), setOf(PipeSlot.E0), 1
             )
             baseOp in mviOps -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.MVI, regs.lastOrNull(), regs.dropLast(1), setOf(PipeSlot.E0), 1
             )
+
+            // --- Integer Multiply (E0 Only, 8 / 12 / 14 cycle latency) ---
             baseOp == "mull" -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.IMUL, regs.lastOrNull(), regs.dropLast(1), setOf(PipeSlot.E0), 8, nonPipelinedBusyCycles = 4
             )
@@ -153,17 +164,25 @@ object AlphaInstructionTable {
             baseOp == "umulh" -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.IMUL, regs.lastOrNull(), regs.dropLast(1), setOf(PipeSlot.E0), 14, nonPipelinedBusyCycles = 10
             )
+
+            // --- Loads (Integer & FP, E0 Only; destination $31/$f31 acts as EV56 prefetch) ---
             baseOp in intLoads || baseOp in fpLoads -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.LOAD, regs.firstOrNull(), listOfNotNull(memInfo?.second),
                 setOf(PipeSlot.E0), 2, memOffset = memInfo?.first ?: 0, baseReg = memInfo?.second, isMissHint = isMissHint
             )
+
+            // --- Stores (Integer & FP, E0 Only) ---
             baseOp in intStores || baseOp in fpStores -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.STORE, null, regs,
                 setOf(PipeSlot.E0), 1, memOffset = memInfo?.first ?: 0, baseReg = memInfo?.second
             )
+
+            // --- Int <-> FP Register Transfers (FIX) ---
             baseOp in intFpXferOps -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.ALU, regs.lastOrNull(), regs.dropLast(1), setOf(PipeSlot.E0), 4
             )
+
+            // --- Branches & Jumps ---
             baseOp in condIntBranches -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.IBRANCH, null, regs, setOf(PipeSlot.E0, PipeSlot.E1), 1, branchPenalty = 5
             )
@@ -176,31 +195,43 @@ object AlphaInstructionTable {
             baseOp in fpBranches -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.FP_BRANCH, null, regs, setOf(PipeSlot.FA), 1, branchPenalty = 5
             )
+
+            // --- Floating-Point Add / Cmp / Cvt / CMOV (FA Only, 4-cycle latency) ---
             baseOp in fpAddOps -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.FP_ADD, regs.lastOrNull(), regs.dropLast(1), setOf(PipeSlot.FA), 4
             )
             baseOp in fpCmovOps -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.FP_ADD, regs.lastOrNull(), regs, setOf(PipeSlot.FA), 4
             )
+
+            // --- Floating-Point Multiply (FM Only, 4-cycle pipelined) ---
             baseOp in fpMulOps -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.FP_MUL, regs.lastOrNull(), regs.dropLast(1), setOf(PipeSlot.FM), 4
             )
+
+            // --- Floating-Point Divide (FM Only, Non-Pipelined: 17c single / 30c double) ---
             baseOp in fpDivSingleOps -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.FP_DIV, regs.lastOrNull(), regs.dropLast(1), setOf(PipeSlot.FM), 17, nonPipelinedBusyCycles = 14
             )
             baseOp in fpDivDoubleOps -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.FP_DIV, regs.lastOrNull(), regs.dropLast(1), setOf(PipeSlot.FM), 30, nonPipelinedBusyCycles = 27
             )
-            baseOp in setOf("fetch", "fetch_m", "ecb", "wh64") -> DecodedInstruction(
+
+            // --- Cache Block Hints (ecb / wh64) ---
+            baseOp in setOf("ecb", "wh64") -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.PREFETCH, null, listOfNotNull(memInfo?.second),
                 setOf(PipeSlot.E0), 1, memOffset = memInfo?.first ?: 0, baseReg = memInfo?.second
             )
+
+            // --- Barriers & PALcode ---
             baseOp in setOf("mb", "wmb", "trapb", "excb") -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.BARRIER, null, emptyList(), setOf(PipeSlot.E0), 1
             )
             baseOp == "call_pal" -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.PAL, null, emptyList(), setOf(PipeSlot.E0), 10
             )
+
+            // Fallback for unknown macros/instructions
             else -> DecodedInstruction(
                 lineNum, rawOp, baseOp, InstType.ALU, regs.lastOrNull(), regs.dropLast(1), setOf(PipeSlot.E0), 1
             )
@@ -212,7 +243,7 @@ object AlphaInstructionTable {
         val offStr = m.groupValues[1]
         val offset = when {
             offStr.isEmpty() -> 0
-            offStr.startsWith("0x", true) -> offStr.substring(2).toLongOrNull(16)?.toInt() ?: 0
+            offStr.startsWith("0x", true) -> offStr.substring(2).toIntOrNull(16) ?: 0
             else -> offStr.toIntOrNull() ?: 0
         }
         return Pair(offset, m.groupValues[2])
