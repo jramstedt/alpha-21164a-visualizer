@@ -242,7 +242,7 @@ class Alpha21164ASimulator {
             }
 
             // 6. Update destination register readiness (ignore hardwired zero registers $31 and $f31)
-            if (inst.destReg != null && inst.destReg !in setOf("$31", "$f31", "zero")) {
+            if (inst.destReg != null && inst.destReg !in setOf("$31", "\$f31", "zero")) {
                 regReadyCycle[inst.destReg] = currentCycle + effectiveLatency
             }
 
