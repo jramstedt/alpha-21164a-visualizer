@@ -80,8 +80,9 @@ class Alpha21164ASimulator {
             currentPc += 4L
         }
 
-        // Pass 2: Cycle-accurate EV56 quad-issue scheduling
+        // Pass 2: Cycle-accurate EV56 quad-issue scheduling with base-register versioning
         val regReadyCycle = mutableMapOf<String, Int>()
+        val regVersion = mutableMapOf<String, Int>()
         var currentCycle = 0
         val usedSlotsInCurrentCycle = mutableSetOf<PipeSlot>()
         var fmUnitFreeCycle = 0
@@ -156,13 +157,20 @@ class Alpha21164ASimulator {
                 }
             }
 
-            // 4. Check memory subsystem hazards (WBUF / Load MAF / Barriers)
+            // 4. Check memory subsystem hazards (WBUF / Load MAF / Barriers) using versioned base register
+            val rawBase = inst.baseReg ?: "$31"
+            val versionedBase = if (AlphaRegisterMap.isZeroRegister(rawBase)) {
+                rawBase
+            } else {
+                "$rawBase#${regVersion[rawBase] ?: 0}"
+            }
+
             var effectiveLatency = inst.latency
             when (inst.type) {
                 InstType.STORE -> {
                     val wbufStall = wbufTracker.store(
                         currentCycle = currentCycle,
-                        baseReg = inst.baseReg ?: "$31",
+                        baseReg = versionedBase,
                         offset = inst.memOffset,
                         activeLoadMisses = mafTracker.activeLoadCount(currentCycle)
                     )
@@ -185,7 +193,7 @@ class Alpha21164ASimulator {
                 InstType.LOAD -> {
                     val storeConflictStall = wbufTracker.checkLoadConflict(
                         currentCycle = currentCycle,
-                        baseReg = inst.baseReg ?: "$31",
+                        baseReg = versionedBase,
                         offset = inst.memOffset
                     )
                     if (storeConflictStall > 0) {
@@ -198,7 +206,7 @@ class Alpha21164ASimulator {
                     val isPrefetch = AlphaRegisterMap.isZeroRegister(inst.destReg)
                     val (mafStall, memReadyCycle) = mafTracker.accessMemory(
                         currentCycle = currentCycle,
-                        baseReg = inst.baseReg ?: "$31",
+                        baseReg = versionedBase,
                         offset = inst.memOffset,
                         isPrefetchOrZeroDest = isPrefetch,
                         assumeL1Miss = inst.isMissHint
@@ -214,7 +222,7 @@ class Alpha21164ASimulator {
                 InstType.PREFETCH -> {
                     mafTracker.accessMemory(
                         currentCycle = currentCycle,
-                        baseReg = inst.baseReg ?: "$31",
+                        baseReg = versionedBase,
                         offset = inst.memOffset,
                         isPrefetchOrZeroDest = true,
                         assumeL1Miss = false
@@ -223,7 +231,7 @@ class Alpha21164ASimulator {
                 else -> {}
             }
 
-            // 5. General EV56 slot selection:
+            // 5. General EV56 slot selection (no opcode-specific hardcoding):
             // Yield E0 to E1 when the next independent instruction strictly requires E0.
             val nextHasRawOnCurrent = inst.destReg != null &&
                 !AlphaRegisterMap.isZeroRegister(inst.destReg) &&
@@ -256,9 +264,10 @@ class Alpha21164ASimulator {
                 e0MulUnitFreeCycle = currentCycle + inst.nonPipelinedBusyCycles
             }
 
-            // 6. Update destination register readiness (ignoring hardwired zero registers $31 and $f31)
+            // 6. Update destination register readiness and increment register write version
             if (inst.destReg != null && !AlphaRegisterMap.isZeroRegister(inst.destReg)) {
                 regReadyCycle[inst.destReg] = currentCycle + effectiveLatency
+                regVersion[inst.destReg] = (regVersion[inst.destReg] ?: 0) + 1
             }
 
             result[item.lineIdx] = LineSchedule(

@@ -3,27 +3,42 @@ package dec.alpha.ev56
 data class WbufEntry(
     val cacheBlockTag: String,
     var drainCompleteCycle: Int,
-    var isDraining: Boolean = false
+    var closedByBarrier: Boolean = false
 )
 
 class WriteBufferTracker(
-    private val maxEntries: Int = 6,
     private val sCacheWriteLatency: Int = 8
 ) {
-    private val entries = mutableListOf<WbufEntry>()
+    // EV56 Write Buffer has 6 entries, each holding up to one 32-byte cache line
+    private val wbuf = mutableListOf<WbufEntry>()
+    private var lastCycle = 0
 
+    /**
+     * Advances background draining of the Write Buffer, honoring EV56 MTU arbitration
+     * where active Load MAF misses take priority over WBUF drains.
+     */
     fun advanceCycle(currentCycle: Int, activeLoadMisses: Int) {
-        entries.removeAll { it.drainCompleteCycle <= currentCycle }
+        if (currentCycle <= lastCycle) return
+        val elapsed = currentCycle - lastCycle
+        lastCycle = currentCycle
 
-        if (activeLoadMisses == 0 && entries.isNotEmpty()) {
-            val oldest = entries.first()
-            if (!oldest.isDraining) {
-                oldest.isDraining = true
-                oldest.drainCompleteCycle = currentCycle + sCacheWriteLatency
+        // If Load MAF misses are active on the Memory Transaction Unit (MTU),
+        // WBUF draining is delayed by contention.
+        if (activeLoadMisses > 0) {
+            for (entry in wbuf) {
+                entry.drainCompleteCycle += elapsed
             }
         }
+
+        wbuf.removeAll { it.drainCompleteCycle <= currentCycle }
     }
 
+    /**
+     * Issues a store into the 6-entry Write Buffer.
+     * Sequential stores to the same 32-byte block merge into the open WBUF entry
+     * unless closed by a memory barrier (wmb/mb).
+     * Returns the number of stall cycles if all 6 entries are full.
+     */
     fun store(
         currentCycle: Int,
         baseReg: String,
@@ -31,47 +46,72 @@ class WriteBufferTracker(
         activeLoadMisses: Int
     ): Int {
         advanceCycle(currentCycle, activeLoadMisses)
-        val blockKey = "$baseReg:${offset shr 5}"
 
-        val mergeTarget = entries.find { it.cacheBlockTag == blockKey && !it.isDraining }
-        if (mergeTarget != null) {
+        val blockIndex = offset shr 5 // 32-byte cache block index
+        val blockKey = "$baseReg:$blockIndex"
+
+        // Merge into an existing open WBUF entry for the same 32-byte cache line
+        val existing = wbuf.lastOrNull {
+            it.cacheBlockTag == blockKey &&
+                !it.closedByBarrier &&
+                it.drainCompleteCycle > currentCycle
+        }
+        if (existing != null) {
+            existing.drainCompleteCycle = maxOf(existing.drainCompleteCycle, currentCycle + 2)
             return 0
         }
 
         var stallCycles = 0
         var issueCycle = currentCycle
-        if (entries.size >= maxEntries) {
-            val earliest = entries.first()
-            if (!earliest.isDraining) {
-                earliest.isDraining = true
-                earliest.drainCompleteCycle = currentCycle + sCacheWriteLatency
+
+        // If all 6 WBUF entries are occupied, stall until the oldest entry drains
+        if (wbuf.size >= 6) {
+            val oldestFree = wbuf.minOf { it.drainCompleteCycle }
+            if (oldestFree > currentCycle) {
+                stallCycles = oldestFree - currentCycle
+                issueCycle = oldestFree
             }
-            if (earliest.drainCompleteCycle > currentCycle) {
-                stallCycles = earliest.drainCompleteCycle - currentCycle
-                issueCycle = earliest.drainCompleteCycle
-                entries.removeAt(0)
-            }
+            wbuf.removeAll { it.drainCompleteCycle <= issueCycle }
         }
 
-        val drainCycle = issueCycle + sCacheWriteLatency + (activeLoadMisses * 2)
-        entries.add(WbufEntry(blockKey, drainCycle, isDraining = (activeLoadMisses == 0)))
+        wbuf.add(
+            WbufEntry(
+                cacheBlockTag = blockKey,
+                drainCompleteCycle = issueCycle + sCacheWriteLatency
+            )
+        )
         return stallCycles
     }
 
-    fun checkLoadConflict(currentCycle: Int, baseReg: String, offset: Int): Int {
-        val blockKey = "$baseReg:${offset shr 5}"
-        val conflict = entries.find { it.cacheBlockTag == blockKey } ?: return 0
-        return if (conflict.drainCompleteCycle > currentCycle) {
-            conflict.drainCompleteCycle - currentCycle
-        } else {
-            0
+    /**
+     * Flushes and closes all active Write Buffer entries on wmb / mb barriers.
+     * Returns the number of stall cycles required to drain pending stores.
+     */
+    fun flushBarrier(currentCycle: Int): Int {
+        wbuf.removeAll { it.drainCompleteCycle <= currentCycle }
+        if (wbuf.isEmpty()) return 0
+
+        val maxDrainCycle = wbuf.maxOf { it.drainCompleteCycle }
+        for (entry in wbuf) {
+            entry.closedByBarrier = true
         }
+        wbuf.clear()
+        return maxOf(0, maxDrainCycle - currentCycle)
     }
 
-    fun flushBarrier(currentCycle: Int): Int {
-        if (entries.isEmpty()) return 0
-        val lastDrain = entries.maxOf { it.drainCompleteCycle }
-        entries.clear()
-        return if (lastDrain > currentCycle) lastDrain - currentCycle else 0
+    /**
+     * Checks whether a load hits an active 32-byte block currently buffered in the WBUF.
+     * Returns stall cycles required for the conflicting store block to drain first.
+     */
+    fun checkLoadConflict(currentCycle: Int, baseReg: String, offset: Int): Int {
+        wbuf.removeAll { it.drainCompleteCycle <= currentCycle }
+        val blockIndex = offset shr 5
+        val blockKey = "$baseReg:$blockIndex"
+
+        val conflict = wbuf.lastOrNull {
+            it.cacheBlockTag == blockKey && it.drainCompleteCycle > currentCycle
+        } ?: return 0
+
+        return maxOf(0, conflict.drainCompleteCycle - currentCycle)
     }
 }
