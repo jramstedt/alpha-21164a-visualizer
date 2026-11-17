@@ -28,7 +28,7 @@ data class DecodedInstruction(
 object AlphaRegisterMap {
 
     private val aliasToCanonical: Map<String, String> = mapOf(
-        // Integer ABI / regdef.h aliases (with and without leading '$')
+        // Integer ABI aliases (with and without leading '$')
         "v0" to "$0",
         "t0" to "$1", "t1" to "$2", "t2" to "$3", "t3" to "$4",
         "t4" to "$5", "t5" to "$6", "t6" to "$7", "t7" to "$8",
@@ -44,7 +44,7 @@ object AlphaRegisterMap {
         "sp" to "$30",
         "zero" to "$31",
 
-        // Floating-point ABI / regdef.h aliases
+        // Floating-point ABI aliases
         "fv0" to "\$f0", "fv1" to "\$f1",
         "fs0" to "\$f2", "fs1" to "\$f3", "fs2" to "\$f4", "fs3" to "\$f5",
         "fs4" to "\$f6", "fs5" to "\$f7", "fs6" to "\$f8", "fs7" to "\$f9",
@@ -58,8 +58,8 @@ object AlphaRegisterMap {
         "ft15" to "\$f31", "fzero" to "\$f31"
     )
 
-    private val rawIntRegex = Regex("^\\u0024([0-9]|[0-9]|3)$")
-    private val rawFpRegex = Regex("^\\u0024f([0-9]|[0-9]|3)$")
+    private val rawIntRegex = Regex("^\\u0024([0-9]|[12][0-9]|3[01])$")
+    private val rawFpRegex = Regex("^\\u0024f([0-9]|[12][0-9]|3[01])$")
 
     /**
      * Converts any raw register ($0..$31, $f0..$f31) or regdef.h alias (v0, $v0, sp, zero, fa0, etc.)
@@ -83,7 +83,7 @@ object AlphaRegisterMap {
 
 object AlphaInstructionTable {
 
-    private val memRegex = Regex("""(-?\d+|0x[0-9a-fA-F]+)?\(\s*(\$?\w+)\s*\)""")
+    private val memRegex = Regex("(-?\\d+|0x[0-9a-fA-F]+)?\\(\\s*(\\u0024?\\w+)\\s*\\)")
 
     private val intAluOps = setOf(
         "addl", "addq", "s4addl", "s8addl", "s4addq", "s8addq",
@@ -324,8 +324,8 @@ object AlphaInstructionTable {
             offStr.startsWith("0x", true) -> offStr.substring(2).toIntOrNull(16) ?: 0
             else -> offStr.toIntOrNull() ?: 0
         }
-        val rawBase = m.groupValues[2]
-        val canonicalBase = AlphaRegisterMap.normalize(rawBase) ?: rawBase
-        return Pair(offset, canonicalBase)
+        val rawReg = m.groupValues[2]
+        val canonicalReg = AlphaRegisterMap.normalize(rawReg) ?: rawReg
+        return Pair(offset, canonicalReg)
     }
 }
